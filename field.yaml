@@ -1,0 +1,9 @@
+project_name: field_autodrive
+train_set: datasets/field_data/train
+val_set: datasets/field_data/val
+
+num_classes: 7
+class_names: ['person', 'vehicle', 'rocks', 'vail', 'tractor', 'pole', 'tree']
+
+seg_list: ['road']
+seg_num_class: 2
