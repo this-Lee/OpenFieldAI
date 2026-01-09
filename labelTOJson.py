@@ -2,77 +2,81 @@ import json
 import os
 import cv2
 import numpy as np
+import shutil
 from pathlib import Path
+from sklearn.model_selection import train_test_split
 
-# 1. 설정 (사용자 경로에 맞게 수정하세요)
-BBOX_JSON = 'bbox_data.json'      # Bbox & Categories 정보가 있는 JSON
-POLY_JSON = 'polygon_data.json'   # Polygon 정보가 있는 JSON
-OUTPUT_DIR = './datasets/field_data'
-IMG_WIDTH, IMG_HEIGHT = 1920, 1080
+# 1. 경로 설정
+RAW_DATA_DIR = './raw_data'      # 시퀀스 폴더들이 있는 곳
+OUTPUT_ROOT = './datasets/field_data'
+VAL_SIZE = 0.2                   # 20%의 시퀀스를 검증셋으로 사용
+IMG_W, IMG_H = 1920, 1080
 
-# 클래스 매핑 (ID를 0부터 시작하도록 재배열)
-# 3: person, 4: vehicle, 5: rocks, 6: vail, 7: tractor, 8: pole, 9: tree
+# 클래스 매핑 (이전 대화 기준)
 DET_CLASS_MAP = {3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6}
 
-# 폴더 생성
-for sub in ['images', 'labels', 'segmentation']:
-    os.makedirs(os.path.join(OUTPUT_DIR, sub), exist_ok=True)
-
-def convert_to_yolo(bbox, w, h):
-    """COCO [x, y, width, height] -> YOLO [cx, cy, w, h] 정규화"""
+def convert_bbox(bbox, w, h):
     x, y, bw, bh = bbox
-    cx = (x + bw / 2.0) / w
-    cy = (y + bh / 2.0) / h
-    nw = bw / w
-    nh = bh / h
-    return cx, cy, nw, nh
+    return [(x + bw/2)/w, (y + bh/2)/h, bw/w, bh/h]
 
-def process_data():
-    # 데이터 로드
-    with open(BBOX_JSON, 'r', encoding='utf-8') as f:
-        bbox_data = json.load(f)
-    with open(POLY_JSON, 'r', encoding='utf-8') as f:
-        poly_data = json.load(f)
+def process_sequence(seq_path, split_type):
+    """특정 시퀀스 폴더를 처리하여 train 또는 val 폴더로 저장"""
+    json_path = list(Path(seq_path).glob('*.json'))[0] # 폴더 내 json 찾기
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
 
-    # 1. Bbox & Image 메타데이터 처리
-    img_id_map = {img['id']: img['file_name'] for img in bbox_data['images']}
+    # 출력 경로 설정
+    img_out = os.path.join(OUTPUT_ROOT, split_type, 'images')
+    lab_out = os.path.join(OUTPUT_ROOT, split_type, 'labels')
+    seg_out = os.path.join(OUTPUT_ROOT, split_type, 'segmentation')
 
-    # 이미지별 라벨 저장용 딕셔너리
-    labels_dict = {img_id: [] for img_id in img_id_map.keys()}
+    for folder in [img_out, lab_out, seg_out]: os.makedirs(folder, exist_ok=True)
 
-    for ann in bbox_data['annotations']:
-        img_id = ann['image_id']
+    # 이미지 메타데이터 매핑
+    img_info_map = {img['id']: img for img in data.get('images', [])}
+
+    # 1. Bbox 처리
+    annotations = data.get('annotations', [])
+    img_labels = {img_id: [] for img_id in img_info_map.keys()}
+    for ann in annotations:
         cat_id = ann['category_id']
         if cat_id in DET_CLASS_MAP:
-            yolo_bbox = convert_to_yolo(ann['bbox'], IMG_WIDTH, IMG_HEIGHT)
-            labels_dict[img_id].append(f"{DET_CLASS_MAP[cat_id]} {' '.join(map(str, yolo_bbox))}")
+            yolo_box = convert_bbox(ann['bbox'], IMG_W, IMG_H)
+            label_str = f"{DET_CLASS_MAP[cat_id]} " + " ".join([f"{v:.6f}" for v in yolo_box])
+            img_labels[ann['image_id']].append(label_str)
 
-    # 2. Polygon 데이터 처리 (Segmentation Mask 생성)
-    # Polygon JSON의 images 리스트를 순회
-    for p_img in poly_data['images']:
-        # 파일명이 Bbox 데이터와 일치하는지 확인 (이름 기준 매칭)
-        file_name = p_img['name']
+    # 2. 이미지 및 세그멘테이션 처리
+    for img_id, info in img_info_map.items():
+        file_name = info['file_name']
         base_name = Path(file_name).stem
 
-        # 빈 마스크 생성 (0: 배경)
-        mask = np.zeros((IMG_HEIGHT, IMG_WIDTH), dtype=np.uint8)
+        # 원본 이미지 복사
+        src_img_path = os.path.join(seq_path, 'images', file_name)
+        if os.path.exists(src_img_path):
+            shutil.copy(src_img_path, os.path.join(img_out, file_name))
 
-        for obj in p_img.get('objects', []):
-            if obj['label'] == 'common_road':
-                # 폴리곤 좌표 변환 및 채우기 (1: 주행 가능 영역)
-                poly = np.array(obj['position']).reshape(-1, 2).astype(np.int32)
-                cv2.fillPoly(mask, [poly], 1)
+        # YOLO 라벨 저장
+        with open(os.path.join(lab_out, f"{base_name}.txt"), 'w') as f:
+            f.write("\n".join(img_labels[img_id]))
 
-        # 마스크 저장
-        cv2.imwrite(os.path.join(OUTPUT_DIR, 'segmentation', f"{base_name}.png"), mask)
+        # 세그멘테이션 마스크 생성 (Polygon 데이터가 있을 경우)
+        mask = np.zeros((IMG_H, IMG_W), dtype=np.uint8)
+        if 'objects' in info: # Polygon 데이터 구조일 때
+            for obj in info['objects']:
+                if obj['label'] == 'common_road':
+                    poly = np.array(obj['position']).reshape(-1, 2).astype(np.int32)
+                    cv2.fillPoly(mask, [poly], 1)
+        cv2.imwrite(os.path.join(seg_out, f"{base_name}.png"), mask)
 
-    # 3. 최종 YOLO 라벨 텍스트 저장
-    for img_id, file_name in img_id_map.items():
-        base_name = Path(file_name).stem
-        with open(os.path.join(OUTPUT_DIR, 'labels', f"{base_name}.txt"), 'w') as f:
-            f.write("\n".join(labels_dict[img_id]))
+# 메인 실행 로직
+sequences = [os.path.join(RAW_DATA_DIR, d) for d in os.listdir(RAW_DATA_DIR)
+             if os.path.isdir(os.path.join(RAW_DATA_DIR, d))]
 
-    print(f"✅ 변환 완료! 데이터셋이 {OUTPUT_DIR}에 저장되었습니다.")
+train_seqs, val_seqs = train_test_split(sequences, test_size=VAL_SIZE, random_state=42)
 
-if __name__ == "__main__":
-    process_data()
+print(f"학습 시퀀스: {len(train_seqs)}개, 검증 시퀀스: {len(val_seqs)}개")
+
+for seq in train_seqs: process_sequence(seq, 'train')
+for seq in val_seqs: process_sequence(seq, 'val')
+
+print("✅ 시퀀스별 데이터 통합 및 분할 완료!")
