@@ -7,106 +7,119 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ==========================================================
-# 1. 경로 및 설정 (사용자 환경에 맞게 수정하세요)
+# 1. 경로 설정 (사용자 환경에 맞게 폴더명을 확인하세요)
 # ==========================================================
 BASE_PATH = './dataset/training'
+
+# 라벨 폴더들
 BBOX_LABEL_DIR = os.path.join(BASE_PATH, 'labeling_data/TL_Bbox')
 POLY_LABEL_DIR = os.path.join(BASE_PATH, 'labeling_data/TL_Polygon')
-IMAGE_DIR = os.path.join(BASE_PATH, 'source_data/TS_Bbox')
 
-OUTPUT_ROOT = './datasets/hybridnets_data'
+# 이미지 폴더들 (두 곳 모두에서 이미지를 찾습니다)
+IMAGE_DIRS = [
+    os.path.join(BASE_PATH, 'source_data/TS_Bbox'),
+    os.path.join(BASE_PATH, 'source_data/TS_Polygon')
+]
+
+OUTPUT_ROOT = './datasets/hybridnets_final'
 IMG_W, IMG_H = 1920, 1080
 
-# 클래스 매핑 (ID -> 모델 학습 인덱스)
-# 3:person, 4:vehicle, 5:rocks, 6:vail, 7:tractor, 8:pole, 9:tree
+# 클래스 매핑 (ID -> 학습 인덱스)
 DET_CLASS_MAP = {3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6}
 
 # 폴더 생성
 for sub in ['images', 'labels', 'segmentation']:
     os.makedirs(os.path.join(OUTPUT_ROOT, sub), exist_ok=True)
 
+def get_clean_key(name):
+    """파일명에서 접두사/접미사를 제거하여 순수 키 생성"""
+    return name.replace('TL_', '').replace('TS_', '').replace('_Bbox', '').replace('_Polygon', '').split('.')[0]
+
 def convert_bbox(bbox, w, h):
-    """[x, y, width, height] -> YOLO [cx, cy, w, h] 정규화"""
     x, y, bw, bh = bbox
-    cx = (x + bw / 2.0) / w
-    cy = (y + bh / 2.0) / h
-    nw = bw / w
-    nh = bh / h
-    return [cx, cy, nw, nh]
+    return [(x + bw/2)/w, (y + bh/2)/h, bw/w, bh/h]
 
 def main():
-    # 2. 파일 스캔 (하위 폴더 포함)
-    print("📂 데이터를 스캔 중입니다. 잠시만 기다려주세요...")
+    # 2. 모든 데이터 미리 스캔 (Index 구축)
+    print("🔍 모든 폴더를 스캔하여 인덱스를 생성 중...")
 
-    # 각 파일의 Stem(확장자 제외 이름)을 키로 전체 경로 저장
-    # NIA 데이터의 'TL_', 'TS_', '_Bbox', '_Polygon' 접미사를 제거하여 매칭용 키 생성
-    def get_clean_key(name):
-        return name.replace('TL_', '').replace('TS_', '').replace('_Bbox', '').replace('_Polygon', '')
+    # 이미지 스캔 (여러 폴더 대응)
+    image_pool = {}
+    for d in IMAGE_DIRS:
+        if os.path.exists(d):
+            for p in Path(d).rglob('*'):
+                if p.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                    image_pool[get_clean_key(p.stem)] = p
 
-    bbox_jsons = {get_clean_key(p.stem): p for p in Path(BBOX_LABEL_DIR).rglob('*.json')}
-    poly_jsons = {get_clean_key(p.stem): p for p in Path(POLY_LABEL_DIR).rglob('*.json')}
-    image_pool = {get_clean_key(p.stem): p for p in Path(IMAGE_DIR).rglob('*')
-                  if p.suffix.lower() in ['.jpg', '.jpeg', '.png']}
+    # JSON 스캔
+    bbox_jsons = list(Path(BBOX_LABEL_DIR).rglob('*.json')) if os.path.exists(BBOX_LABEL_DIR) else []
+    poly_jsons = list(Path(POLY_LABEL_DIR).rglob('*.json')) if os.path.exists(POLY_LABEL_DIR) else []
 
-    common_keys = set(image_pool.keys())
-    print(f"발견된 이미지: {len(image_pool)}개")
-    print(f"매칭된 Bbox JSON: {len(bbox_jsons)}개")
-    print(f"매칭된 Polygon JSON: {len(poly_jsons)}개")
+    # 데이터 저장용 딕셔너리
+    final_bboxes = {key: [] for key in image_pool.keys()}
+    final_polygons = {key: [] for key in image_pool.keys()}
 
-    # 3. 통합 처리 루프
-    print("🚀 데이터 통합 변환을 시작합니다...")
+    # 3. Bbox JSON 파싱 (다양한 형식 대응)
+    print("📦 Bbox 라벨 해석 중...")
+    for j_path in bbox_jsons:
+        with open(j_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-    for key in tqdm(common_keys):
-        img_path = image_pool[key]
-        img_filename = img_path.name
-        base_name = img_path.stem
+        # 형식 1: COCO 스타일 (annotations 리스트)
+        if 'annotations' in data and 'images' in data:
+            id_to_key = {img['id']: get_clean_key(img['file_name']) for img in data['images']}
+            for ann in data['annotations']:
+                key = id_to_key.get(ann['image_id'])
+                if key in final_bboxes:
+                    cat_id = ann.get('category_id')
+                    if cat_id in DET_CLASS_MAP and 'bbox' in ann:
+                        final_bboxes[key].append((DET_CLASS_MAP[cat_id], ann['bbox']))
 
-        # --- A. 이미지 복사 ---
-        shutil.copy(img_path, os.path.join(OUTPUT_ROOT, 'images', img_filename))
+        # 형식 2: NIA 이미지 중심 스타일 (images 내에 objects)
+        elif 'images' in data:
+            for img in data['images']:
+                key = get_clean_key(img.get('name') or img.get('file_name'))
+                if key in final_bboxes:
+                    for obj in img.get('objects', []):
+                        cat_id = obj.get('category_id') or obj.get('label')
+                        if str(cat_id).isdigit() and int(cat_id) in DET_CLASS_MAP:
+                            if 'bbox' in obj: final_bboxes[key].append((DET_CLASS_MAP[int(cat_id)], obj['bbox']))
 
-        # --- B. Bbox 처리 (Detection) ---
-        yolo_labels = []
-        if key in bbox_jsons:
-            with open(bbox_jsons[key], 'r', encoding='utf-8') as f:
-                bbox_data = json.load(f)
+    # 4. Polygon JSON 파싱
+    print("🎨 Polygon 라벨 해석 중...")
+    for j_path in poly_jsons:
+        with open(j_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-            # JSON 구조에 따라 'annotations' 또는 'objects' 탐색
-            objs = bbox_data.get('annotations', []) if 'annotations' in bbox_data else bbox_data.get('objects', [])
-            for obj in objs:
-                cat_id = obj.get('category_id') or obj.get('label')
-                if cat_id in DET_CLASS_MAP:
-                    bbox = obj.get('bbox')
-                    if bbox:
-                        yolo_box = convert_bbox(bbox, IMG_W, IMG_H)
-                        yolo_labels.append(f"{DET_CLASS_MAP[cat_id]} " + " ".join([f"{v:.6f}" for v in yolo_box]))
+        # NIA Polygon 형식 (images 리스트 순회)
+        imgs_list = data.get('images', [])
+        for img in imgs_list:
+            key = get_clean_key(img.get('name') or img.get('file_name'))
+            if key in final_polygons:
+                for obj in img.get('objects', []):
+                    if obj.get('label') == 'common_road' and 'position' in obj:
+                        final_polygons[key].append(obj['position'])
 
-        with open(os.path.join(OUTPUT_ROOT, 'labels', f"{base_name}.txt"), f"w") as f:
-            f.write("\n".join(yolo_labels))
+    # 5. 최종 파일 생성
+    print("💾 통합 데이터셋 저장 중...")
+    for key, img_path in tqdm(image_pool.items()):
+        # 이미지 복사
+        shutil.copy(img_path, os.path.join(OUTPUT_ROOT, 'images', img_path.name))
 
-        # --- C. Polygon 처리 (Segmentation Mask) ---
+        # YOLO txt 저장
+        labels = [f"{c} {' '.join(map(str, convert_bbox(b, IMG_W, IMG_H)))}" for c, b in final_bboxes[key]]
+        with open(os.path.join(OUTPUT_ROOT, 'labels', f"{img_path.stem}.txt"), 'w') as f:
+            f.write("\n".join(labels))
+
+        # Mask png 저장
         mask = np.zeros((IMG_H, IMG_W), dtype=np.uint8)
-        if key in poly_jsons:
-            with open(poly_jsons[key], 'r', encoding='utf-8') as f:
-                poly_data = json.load(f)
+        for poly in final_polygons[key]:
+            # 다중 리스트 구조 대응
+            pts = np.array(poly[0] if isinstance(poly[0], list) else poly).reshape(-1, 2).astype(np.int32)
+            cv2.fillPoly(mask, [pts], 1)
+        cv2.imwrite(os.path.join(OUTPUT_ROOT, 'segmentation', f"{img_path.stem}.png"), mask)
 
-            objs = poly_data.get('objects', []) if 'objects' in poly_data else poly_data.get('annotations', [])
-            for obj in objs:
-                # 'common_road' 라벨을 주행 영역(1)으로 설정
-                if obj.get('label') == 'common_road' and 'position' in obj:
-                    # 폴리곤 좌표가 리스트의 리스트 형태일 수 있으므로 처리
-                    pos = obj['position']
-                    if isinstance(pos[0], list): # [[x1,y1,x2,y2...]] 형태
-                        pts = np.array(pos[0]).reshape(-1, 2).astype(np.int32)
-                    else: # [x1,y1,x2,y2...] 형태
-                        pts = np.array(pos).reshape(-1, 2).astype(np.int32)
-
-                    cv2.fillPoly(mask, [pts], 1)
-
-        # 마스크 저장 (.png)
-        cv2.imwrite(os.path.join(OUTPUT_ROOT, 'segmentation', f"{base_name}.png"), mask)
-
-    print(f"\n✅ 모든 공정이 완료되었습니다!")
-    print(f"결과물 위치: {os.path.abspath(OUTPUT_ROOT)}")
+    print(f"\n✅ 완료! 총 {len(image_pool)}세트의 데이터가 통합되었습니다.")
 
 if __name__ == "__main__":
     main()
