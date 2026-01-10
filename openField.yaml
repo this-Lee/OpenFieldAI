@@ -1,20 +1,57 @@
-# projects/openfield.yml
+# [프로젝트 설정]
 project_name: openfield
-train_set: datasets/hybridnets_final/train
-val_set: datasets/hybridnets_final/val
 
-num_gpus: 1
-pin_memory: True
+# [이미지 전처리 설정]
+# COCO 데이터셋 표준 값입니다.
 mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]
 
-model:
-  image_size: [384, 640] # [H, W]
+# [Anchor 설정]
+# 사용자님이 제공해주신 깃허브 최적화 값을 적용했습니다.
+anchors_scales: '[2**0, 2**0.70, 2**1.32]'
+anchors_ratios: '[(0.62, 1.58), (1.0, 1.0), (1.58, 0.62)]'
 
+# [객체 검출(Detection) 설정]
+# 진단 결과(image_1b866a.jpg)에서 확인된 7개 클래스입니다.
 obj_list: ['person', 'vehicle', 'rocks', 'vail', 'tractor', 'pole', 'tree']
-seg_list: ['road']
-seg_multilabel: False
+obj_combine: [] # 클래스 통합이 필요 없는 경우 비워둡니다.
 
-# Anchor 설정 (자동 생성 시 run_anchor 활용)
-anchors_scales: '[2**0, 2**(1/3), 2**(2/3)]'
-anchors_ratios: '[(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)]'
+# [세그멘테이션(Segmentation) 설정]
+# 주행 가능 영역(도로) 단일 클래스 설정입니다.
+seg_list: ['road']
+seg_multilabel: false
+
+# [데이터셋 경로 설정]
+# FileNotFoundError를 방지하기 위해 사용자님의 PC 절대 경로를 사용합니다.
+dataset:
+  dataroot: "C:/Users/WKU/Documents/Lee_Chung_Hyeon/OpenFieldAI-main/OpenFieldAI-main/datasets/hybridnets_final"
+  test_set: val
+  train_set: train
+  org_img_size:
+    - 1080
+    - 1920
+
+  # 데이터 증강(Augmentation) 설정 (기본값)
+  fliplr: 0.5
+  flipud: 0.0
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  rot_factor: 10
+  scale_factor: 0.25
+  shear: 0.0
+  translate: 0.1
+  mosaic: 0.0
+  mixup: 0.0
+
+# [모델 및 학습 설정]
+model:
+  image_size:
+    - 640 # 가로(W)
+    - 384 # 세로(H)
+
+  # Unknown model (efficientnet-b3) 에러 해결을 위한 명칭입니다.
+  backbone_name: 'tf_efficientnet_b3'
+
+need_autoanchor: false
+pin_memory: true
