@@ -1,0 +1,16 @@
+project_name: openfield_nia
+
+# 데이터 경로
+train_set: datasets/hybridnets_final/train
+val_set: datasets/hybridnets_final/val
+
+# 객체 검출 설정 (7개 클래스)
+num_classes: 7
+class_names: ['person', 'vehicle', 'rocks', 'vail', 'tractor', 'pole', 'tree']
+
+# 주행 가능 영역 설정
+seg_list: ['road']
+seg_num_class: 2 # 배경(0) + 도로(1)
+
+# 이미지 크기
+obj_size: 640 # HybridNets 기본 입력 크기 (1280x720 등 설정 가능)
