@@ -1,16 +1,20 @@
-project_name: openfield_nia
-
-# 데이터 경로
+# projects/openfield.yml
+project_name: openfield
 train_set: datasets/hybridnets_final/train
 val_set: datasets/hybridnets_final/val
 
-# 객체 검출 설정 (7개 클래스)
-num_classes: 7
-class_names: ['person', 'vehicle', 'rocks', 'vail', 'tractor', 'pole', 'tree']
+num_gpus: 1
+pin_memory: True
+mean: [0.485, 0.456, 0.406]
+std: [0.229, 0.224, 0.225]
 
-# 주행 가능 영역 설정
+model:
+  image_size: [384, 640] # [H, W]
+
+obj_list: ['person', 'vehicle', 'rocks', 'vail', 'tractor', 'pole', 'tree']
 seg_list: ['road']
-seg_num_class: 2 # 배경(0) + 도로(1)
+seg_multilabel: False
 
-# 이미지 크기
-obj_size: 640 # HybridNets 기본 입력 크기 (1280x720 등 설정 가능)
+# Anchor 설정 (자동 생성 시 run_anchor 활용)
+anchors_scales: '[2**0, 2**(1/3), 2**(2/3)]'
+anchors_ratios: '[(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)]'
